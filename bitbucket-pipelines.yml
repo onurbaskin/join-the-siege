@@ -1,0 +1,70 @@
+image: atlassian/default-image:latest
+
+definitions:
+  services:
+    docker:
+      memory: 2048
+
+  steps:
+    - step: &test
+        name: Run Tests
+        image: python:3.12
+        script:
+          - pip install -r requirements.txt
+          - pip install pytest
+          - python -m pytest tests/
+
+    - step: &build-qa
+        name: Build and Push QA Images
+        image: atlassian/pipelines-awscli:latest
+        services:
+          - docker
+        script:
+          # Configure AWS credentials
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+
+          # Login to AWS ECR
+          - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+          # Build and tag images for QA
+          - export IMAGE_TAG=${BITBUCKET_BRANCH}-${BITBUCKET_COMMIT:0:7}
+          - docker build -t $ECR_REPOSITORY_URI:qa-$IMAGE_TAG .
+          - docker build -f Dockerfile.celery -t $ECR_REPOSITORY_URI-worker:qa-$IMAGE_TAG .
+
+          # Push images to ECR
+          - docker push $ECR_REPOSITORY_URI:qa-$IMAGE_TAG
+          - docker push $ECR_REPOSITORY_URI-worker:qa-$IMAGE_TAG
+
+    - step: &build-prod
+        name: Build and Push Production Images
+        image: atlassian/pipelines-awscli:latest
+        services:
+          - docker
+        script:
+          # Configure AWS credentials
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+
+          # Login to AWS ECR
+          - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+          # Build and tag images for production
+          - docker build -t $ECR_REPOSITORY_URI:latest .
+          - docker build -f Dockerfile.celery -t $ECR_REPOSITORY_URI-worker:latest .
+
+          # Push images to ECR
+          - docker push $ECR_REPOSITORY_URI:latest
+          - docker push $ECR_REPOSITORY_URI-worker:latest
+
+pipelines:
+  default:
+    - step: *test
+    - step: *build-qa
+
+  branches:
+    main:
+      - step: *test
+      - step: *build-prod
